@@ -18,6 +18,7 @@ data "template_file" "cb_app" {
 
 resource "aws_ecs_task_definition" "app" {
     family                   = "cb-app-task"
+    task_role_arn            = aws_iam_role.ecs_task_role.arn
     execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
     network_mode             = "awsvpc"
     requires_compatibilities = ["FARGATE"]
@@ -46,4 +47,38 @@ resource "aws_ecs_service" "main" {
     }
 
     depends_on = [aws_alb_listener.front_end, aws_iam_role_policy_attachment.ecs-task-execution-role-policy-attachment]
+}
+
+resource "aws_iam_role" "ecs_task_role" {
+  name = "cb-ecs-task-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "ecs_task_sqs" {
+  name = "cb-ecs-task-sqs"
+  role = aws_iam_role.ecs_task_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "sqs:SendMessage",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl"
+      ]
+      Resource = [
+        aws_sqs_queue.terraform_queue.arn,
+        aws_sqs_queue.terraform_queue_deadletter.arn
+      ]
+    }]
+  })
 }
