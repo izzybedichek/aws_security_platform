@@ -6,6 +6,6 @@ variable "scanner_token" {
 
 resource "aws_ssm_parameter" "scanner_token" {
   name  = "/sast/scanner-token"
-  type  = "SecureString"   # matches WithDecryption:true in server.js
+  type  = "SecureString" # matches WithDecryption:true in server.js
   value = var.scanner_token
 }

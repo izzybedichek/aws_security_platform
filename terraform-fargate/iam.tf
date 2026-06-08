@@ -75,6 +75,22 @@ resource "aws_iam_role_policy" "ecs_task_runtime" {
         Condition = {
           StringEquals = { "kms:ViaService" = "ssm.${var.aws_region}.amazonaws.com" }
         }
+      },
+      {
+        # Producer (SendMessage) + consumer (Receive/Delete/ChangeVisibility)
+        # on the main scan queue only. The DLQ is service-managed via the
+        # redrive policy, so the task needs no DLQ permissions.
+        Sid    = "ScanQueue"
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:GetQueueUrl",
+          "sqs:ChangeMessageVisibility"
+        ]
+        Resource = aws_sqs_queue.scan_jobs.arn
       }
     ]
   })

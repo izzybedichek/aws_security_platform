@@ -39,3 +39,28 @@ resource "aws_cloudwatch_metric_alarm" "scanner_gate_down" {
   alarm_actions = [aws_sns_topic.gate_alerts.arn]
   ok_actions    = [aws_sns_topic.gate_alerts.arn]
 }
+
+# Fires the moment a scan job lands in the DLQ (failed 4x). This is how a
+# "never lost" request surfaces to a human: the message is preserved in the
+# DLQ and DevOps is emailed to investigate / replay it.
+resource "aws_cloudwatch_metric_alarm" "scan_dlq_not_empty" {
+  alarm_name        = "sast-scan-dlq-not-empty"
+  alarm_description = "A scan job failed repeatedly and was moved to the dead-letter queue"
+
+  namespace   = "AWS/SQS"
+  metric_name = "ApproximateNumberOfMessagesVisible"
+  statistic   = "Maximum"
+  period      = 60
+
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    QueueName = aws_sqs_queue.scan_jobs_dlq.name
+  }
+
+  alarm_actions = [aws_sns_topic.gate_alerts.arn]
+  ok_actions    = [aws_sns_topic.gate_alerts.arn]
+}
