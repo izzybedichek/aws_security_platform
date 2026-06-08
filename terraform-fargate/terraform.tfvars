@@ -1,1 +1,5 @@
-aws_region = "preferred reqion"
+aws_region               = "us-east-1"
+devops_email             = "razi.h@northeastern.edu"
+scan_reports_bucket_name = "sast-scan-reports-hospital"
+scan_metrics_table_name  = "sast-scan-metrics"
+scanner_token            = "replace-with-secure-token-before-apply"

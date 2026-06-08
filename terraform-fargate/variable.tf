@@ -1,50 +1,50 @@
 # original source: https://medium.com/@olayinkasamuel44/using-terraform-and-fargate-to-create-amazons-ecs-e3308c1b9166
-
 variable "aws_region" {
     description = "The AWS region things are created in"
 }
-
 variable "ec2_task_execution_role_name" {
     description = "ECS task execution role name"
     default = "myEcsTaskExecutionRole"
 }
-
 variable "ecs_auto_scale_role_name" {
     description = "ECS auto scale role name"
     default = "myEcsAutoScaleRole"
 }
-
 variable "az_count" {
     description = "Number of AZs to cover in a given region"
     default = "2"
 }
-
 variable "app_image" {
-    description = "Docker image to run in the ECS cluster"
+    description = "Docker image to run in the ECS cluster. Points to the SAST scanner image in ECR."
     default = "bradfordhamilton/crystal_blockchain:latest"
 }
-
 variable "app_port" {
     description = "Port exposed by the docker image to redirect traffic to"
     default = 3000
-
 }
-
 variable "app_count" {
     description = "Number of docker containers to run"
     default = 3
 }
-
 variable "health_check_path" {
   default = "/health"
 }
-
 variable "fargate_cpu" {
     description = "Fargate instance CPU units to provision (1 vCPU = 1024 CPU units)"
     default = "1024"
 }
-
 variable "fargate_memory" {
     description = "Fargate instance memory to provision (in MiB)"
     default = "2048"
+}
+variable "scan_reports_bucket_name" {
+    description = "S3 bucket name for storing SAST scan reports"
+    default     = "sast-scan-reports-hospital"
+}
+variable "scan_metrics_table_name" {
+    description = "DynamoDB table name for scan metadata and trends"
+    default     = "sast-scan-metrics"
+}
+variable "devops_email" {
+    description = "Email address to receive SNS alerts when the security gate goes down"
 }

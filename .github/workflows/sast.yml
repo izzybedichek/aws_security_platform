@@ -1,0 +1,77 @@
+name: SAST Security Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  sast-scan:
+    name: Run SAST Scanner
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Send scan job to SQS
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: us-east-1
+          SQS_QUEUE_URL: ${{ secrets.SQS_QUEUE_URL }}
+          SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
+        run: |
+          pip install awscli --quiet
+
+          MESSAGE=$(cat <<EOF
+          {
+            "repo": "${{ github.repository }}",
+            "pr_number": "${{ github.event.pull_request.number }}",
+            "commit_sha": "${{ github.sha }}",
+            "ref": "${{ github.head_ref }}",
+            "scanner_token": "$SCANNER_TOKEN"
+          }
+          EOF
+          )
+
+          aws sqs send-message \
+            --queue-url "$SQS_QUEUE_URL" \
+            --message-body "$MESSAGE" \
+            --region "$AWS_REGION"
+
+          echo "Scan job submitted to SQS for PR #${{ github.event.pull_request.number }}"
+
+      - name: Poll for scan result
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_REGION: us-east-1
+          SCANNER_URL: ${{ secrets.SCANNER_URL }}
+          SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
+        run: |
+          echo "Waiting for SAST scanner to process job..."
+          sleep 10
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST "$SCANNER_URL/scan/code" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $SCANNER_TOKEN" \
+            -d "{\"code\": $(cat sast/backend/test-vulnerable.js | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"filename\": \"test-vulnerable.js\"}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -1)
+
+          echo "Scanner response: $BODY"
+
+          HIGH=$(echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('summary',{}).get('high',0))" 2>/dev/null || echo "0")
+
+          echo "HIGH severity vulnerabilities found: $HIGH"
+
+          if [ "$HIGH" -gt "0" ]; then
+            echo "FAILED: $HIGH HIGH severity vulnerabilities detected. Merge blocked."
+            exit 1
+          else
+            echo "PASSED: No HIGH severity vulnerabilities detected."
+          fi
