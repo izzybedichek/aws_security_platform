@@ -1,13 +1,5 @@
 # original source: https://medium.com/@olayinkasamuel44/using-terraform-and-fargate-to-create-amazons-ecs-e3308c1b9166
 
-variable "aws_access_key" {
-    description = "The IAM public access key"
-}
-
-variable "aws_secret_key" {
-    description = "IAM secret access key"
-}
-
 variable "aws_region" {
     description = "The AWS region things are created in"
 }
@@ -44,7 +36,7 @@ variable "app_count" {
 }
 
 variable "health_check_path" {
-  default = "/"
+  default = "/health"
 }
 
 variable "fargate_cpu" {
