@@ -1,0 +1,134 @@
+name: SAST Gate
+
+# Runs on every PR targeting Izzy. The job collects the changed JS/TS files,
+# sends them to the SAST scanner service (behind the ALB), posts the result as
+# a PR comment, and FAILS the check if the scanner reports HIGH severity.
+#
+# No AWS credentials are used here: the workflow only talks to the scanner over
+# HTTPS with a shared bearer token. Both values come from GitHub secrets, so
+# nothing is hardcoded:
+#   secrets.SCANNER_URL    e.g. https://sast.example.com  (the ALB endpoint)
+#   secrets.SCANNER_TOKEN  the same token the scanner loads from SSM at startup
+
+on:
+  pull_request:
+    branches: [Izzy]
+
+permissions:
+  contents: read          # checkout + git diff
+  pull-requests: write    # post the result comment
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need base..head history for the diff
+
+      - name: Build scan payload from changed files
+        id: payload
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+
+          # Only scan added/copied/modified source files that still exist.
+          mapfile -t files < <(git diff --name-only --diff-filter=ACM "$base" "$head" \
+            -- '*.js' '*.mjs' '*.cjs' '*.ts' '*.tsx' '*.jsx')
+
+          payload=$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg pr "${{ github.event.pull_request.number }}" \
+            '{repo: $repo, pr: $pr, files: []}')
+
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || continue
+            payload=$(jq --arg fn "$f" --rawfile code "$f" \
+              '.files += [{filename: $fn, code: $code}]' <<<"$payload")
+          done
+
+          echo "$payload" > payload.json
+          echo "count=$(jq '.files | length' payload.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Submit scan job
+        id: submit
+        if: steps.payload.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          # -f makes curl exit non-zero on HTTP >= 400 (e.g. 401 bad token).
+          # /scan now returns 202 + a job_id; the scan runs async via SQS.
+          resp=$(curl -fsS -X POST "${{ secrets.SCANNER_URL }}/scan" \
+            -H "Authorization: Bearer ${{ secrets.SCANNER_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --data @payload.json)
+          echo "job_id=$(jq -r '.job_id' <<<"$resp")" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for verdict
+        id: scan
+        if: steps.payload.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          repo_enc=$(jq -rn --arg r "${{ github.repository }}" '$r|@uri')
+          job="${{ steps.submit.outputs.job_id }}"
+          url="${{ secrets.SCANNER_URL }}/result?repo=${repo_enc}&job_id=${job}"
+
+          code=000
+          for i in $(seq 1 60); do          # poll up to ~5 min (60 x 5s)
+            code=$(curl -s -o body.json -w '%{http_code}' \
+              -H "Authorization: Bearer ${{ secrets.SCANNER_TOKEN }}" "$url")
+            [ "$code" = "200" ] && break        # DONE
+            if [ "$code" != "202" ]; then       # 202 = still queued/running
+              echo "::error::scanner returned HTTP $code"; cat body.json; exit 1
+            fi
+            sleep 5
+          done
+
+          if [ "$code" != "200" ]; then
+            echo "::error::timed out waiting for scan result"; exit 1
+          fi
+
+          echo "severity=$(jq -r '.severity' body.json)"     >> "$GITHUB_OUTPUT"
+          echo "report_url=$(jq -r '.report_url' body.json)" >> "$GITHUB_OUTPUT"
+          echo "high=$(jq -r '.summary.high' body.json)"     >> "$GITHUB_OUTPUT"
+          echo "medium=$(jq -r '.summary.medium' body.json)" >> "$GITHUB_OUTPUT"
+          echo "low=$(jq -r '.summary.low' body.json)"       >> "$GITHUB_OUTPUT"
+
+      - name: Comment result on PR
+        if: steps.payload.outputs.count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const s = {
+              severity:   '${{ steps.scan.outputs.severity }}',
+              high:       '${{ steps.scan.outputs.high }}',
+              medium:     '${{ steps.scan.outputs.medium }}',
+              low:        '${{ steps.scan.outputs.low }}',
+              report_url: '${{ steps.scan.outputs.report_url }}',
+            };
+            const icon = s.severity === 'HIGH' ? '3' : s.severity === 'MEDIUM' ? '2' : '1';
+            const body = [
+              `### ${icon} SAST scan: **${s.severity}**`,
+              ``,
+              `| High | Medium | Low |`,
+              `|------|--------|-----|`,
+              `| ${s.high} | ${s.medium} | ${s.low} |`,
+              ``,
+              `[View full report](${s.report_url})`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Enforce gate
+        if: steps.payload.outputs.count != '0'
+        run: |
+          if [ "${{ steps.scan.outputs.severity }}" = "HIGH" ]; then
+            echo "::error::SAST scan found HIGH severity findings. Blocking merge."
+            exit 1
+          fi
+          echo "SAST gate passed (severity: ${{ steps.scan.outputs.severity }})."
