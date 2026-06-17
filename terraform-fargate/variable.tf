@@ -34,8 +34,6 @@ variable "fargate_memory" {
   default     = "2048"
 }
 
-# --- added: previously referenced but never declared ---
-
 variable "scan_reports_bucket_name" {
   description = "Globally-unique S3 bucket name for SAST scan reports"
   type        = string
