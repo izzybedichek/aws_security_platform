@@ -1,0 +1,161 @@
+name: Terraform Deploy
+
+# Keyless deploy of the SAST infrastructure.
+#
+#   PR to main  -> terraform fmt/validate/plan  (review the diff, change nothing)
+#   push to main -> terraform apply, then build+push the image and roll out ECS
+#
+# Auth is via GitHub OIDC: the job assumes an AWS IAM role at runtime, so there
+# are NO long-lived AWS access keys anywhere (same principle as the scanner's
+# SSM token). See the prerequisites note at the bottom of this file.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'terraform-fargate/**'
+      - 'sast/backend/**'
+      - '.github/workflows/deploy.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'terraform-fargate/**'
+      - 'sast/backend/**'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+# id-token: write is REQUIRED for OIDC. contents: read for checkout.
+permissions:
+  id-token: write
+  contents: read
+
+# Never let two applies touch the state at once.
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  # Terraform reads these automatically as var.* via the TF_VAR_ prefix.
+  TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+  TF_VAR_scan_reports_bucket_name: ${{ vars.SCAN_REPORTS_BUCKET_NAME }}
+  TF_VAR_devops_email: ${{ vars.DEVOPS_EMAIL }}
+  TF_VAR_scanner_token: ${{ secrets.SCANNER_TOKEN }}
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC, keyless)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Terraform init
+        working-directory: terraform-fargate
+        run: terraform init -input=false
+
+      - name: Terraform format check
+        working-directory: terraform-fargate
+        run: terraform fmt -check -recursive
+
+      - name: Terraform validate
+        working-directory: terraform-fargate
+        run: terraform validate
+
+      # ---- PR: plan only, no changes ----
+      - name: Terraform plan
+        if: github.event_name == 'pull_request'
+        working-directory: terraform-fargate
+        run: terraform plan -input=false -no-color
+
+      # ---- main: apply ----
+      - name: Terraform apply
+        if: github.event_name != 'pull_request'
+        working-directory: terraform-fargate
+        run: terraform apply -auto-approve -input=false
+
+      - name: Read Terraform outputs
+        id: tf
+        if: github.event_name != 'pull_request'
+        working-directory: terraform-fargate
+        run: |
+          {
+            echo "ecr_url=$(terraform output -raw ecr_repository_url)"
+            echo "cluster=$(terraform output -raw cluster_name)"
+            echo "api_service=$(terraform output -raw api_service_name)"
+            echo "worker_service=$(terraform output -raw worker_service_name)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Login to Amazon ECR
+        if: github.event_name != 'pull_request'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push scanner image
+        if: github.event_name != 'pull_request'
+        working-directory: sast/backend
+        run: |
+          IMAGE="${{ steps.tf.outputs.ecr_url }}:latest"
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Roll out new image to ECS
+        if: github.event_name != 'pull_request'
+        run: |
+          aws ecs update-service \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --service "${{ steps.tf.outputs.api_service }}" \
+            --force-new-deployment
+          aws ecs update-service \
+            --cluster "${{ steps.tf.outputs.cluster }}" \
+            --service "${{ steps.tf.outputs.worker_service }}" \
+            --force-new-deployment
+
+# ---------------------------------------------------------------------------
+# ONE-TIME PREREQUISITES (set up by hand, since they bootstrap this pipeline):
+#
+# 1. GitHub OIDC provider + IAM role in AWS. Create an IAM OIDC provider for
+#    token.actions.githubusercontent.com, then a role whose trust policy is
+#    scoped to THIS repo (so no other repo can assume it):
+#
+#    {
+#      "Effect": "Allow",
+#      "Principal": { "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com" },
+#      "Action": "sts:AssumeRoleWithWebIdentity",
+#      "Condition": {
+#        "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
+#        "StringLike":   { "token.actions.githubusercontent.com:sub": "repo:<OWNER>/<REPO>:ref:refs/heads/main" }
+#      }
+#    }
+#
+#    Give the role permissions to manage exactly these services (ECS, ECR, IAM,
+#    S3, DynamoDB, SQS, SNS, Lambda, KMS, SSM, CloudWatch, EC2/VPC). Keep it as
+#    tight as your assignment allows rather than AdministratorAccess.
+#
+# 2. Remote Terraform state (ESSENTIAL for CI -- each runner is ephemeral, so
+#    local state would re-create everything every run). Pre-create an S3 bucket
+#    + DynamoDB lock table, then add a backend block to provider.tf:
+#
+#    terraform {
+#      backend "s3" {
+#        bucket         = "<your-tfstate-bucket>"
+#        key            = "sast/terraform.tfstate"
+#        region         = "<region>"
+#        dynamodb_table = "<your-lock-table>"
+#        encrypt        = true
+#      }
+#    }
+#
+# 3. Repository config (Settings -> Secrets and variables -> Actions):
+#      Secrets:    AWS_DEPLOY_ROLE_ARN, SCANNER_TOKEN
+#      Variables:  AWS_REGION, SCAN_REPORTS_BUCKET_NAME, DEVOPS_EMAIL
+# ---------------------------------------------------------------------------

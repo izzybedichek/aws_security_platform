@@ -1,0 +1,40 @@
+# ---- Terraform ----
+# Local state can contain secrets (e.g. the scanner token) - never commit it.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+
+# Provider plugins / working dir
+**/.terraform/*
+.terraform.tfstate.lock.info
+
+# Variable files may hold sensitive values; keep examples only.
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Plan output
+*.tfplan
+
+# Keep the provider lock file (.terraform.lock.hcl) committed for reproducible
+# builds - it is intentionally NOT ignored.
+
+# ---- Lambda build artifacts ----
+terraform-fargate/build/
+
+# ---- Node ----
+node_modules/
+npm-debug.log*
+.npm
+
+# ---- Secrets / local env ----
+.env
+.env.*
+*.pem
+
+# ---- OS / editor ----
+.DS_Store
+.idea/
+.vscode/
