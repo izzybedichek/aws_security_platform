@@ -21,7 +21,14 @@ resource "aws_sqs_queue" "scan_jobs" {
   # Must exceed a single scan's worst-case time; while a worker holds a message
   # it is invisible to others. If the worker dies, the message reappears after
   # this window and another worker retries it.
-  visibility_timeout_seconds = 60
+  #
+  # 180s: comfortably above realistic scan time so a slow-but-healthy PR is not
+  # re-delivered to a second worker (a duplicate scan) or pushed to the DLQ by
+  # mistake -- yet still under the gate's ~300s poll window, so a genuinely dead
+  # worker's message reappears with time left for a retry to beat the timeout.
+  # The worker does NOT override this per-receive, so this is the single source
+  # of truth for the visibility timeout.
+  visibility_timeout_seconds = 180
 
   message_retention_seconds = 86400 # keep undelivered jobs up to 1 day
   receive_wait_time_seconds = 20    # long polling: fewer empty receives, cheaper

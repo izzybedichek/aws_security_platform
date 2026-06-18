@@ -24,6 +24,16 @@ variable "health_check_path" {
   default = "/health"
 }
 
+# ACM certificate ARN for the ALB HTTPS (443) listener (see alb.tf).
+# Left empty by default: in an AWS Academy lab there is no domain to validate a
+# public ACM cert against, so we run HTTP-only and the HTTPS listener is gated
+# out (count = 0). Set this to a real cert ARN to enable TLS termination.
+variable "certificate_arn" {
+  description = "ACM certificate ARN for the ALB HTTPS listener; empty = HTTP only"
+  type        = string
+  default     = ""
+}
+
 variable "fargate_cpu" {
   description = "Fargate instance CPU units to provision (1 vCPU = 1024 CPU units)"
   default     = "1024"

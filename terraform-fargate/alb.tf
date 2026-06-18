@@ -35,3 +35,41 @@ resource "aws_alb_listener" "front_end" {
     type             = "forward"
   }
 }
+
+# ---------------------------------------------------------------------------
+# PRODUCTION HTTPS LISTENER  (cert-gated; inert by default)
+#
+# KNOWN GAP: the HTTP listener above terminates in cleartext, so the CI bearer
+# token and the submitted source code cross the network unencrypted. The fix is
+# a TLS-terminating 443 listener. It is gated on var.certificate_arn, so it
+# becomes ZERO resources when that var is empty (the default). In the AWS
+# Academy lab there is no domain to validate a public ACM cert against, which is
+# why this is staged-but-off rather than enabled -- the demo runs HTTP-only and
+# `terraform plan` shows no change from this block.
+#
+# To turn it on in production:
+#   1. Request an ACM cert for a domain (e.g. sast.example.com); pass its ARN
+#      as var.certificate_arn.
+#   2. Open 443 on the ALB security group "lb" (security.tf): add an ingress
+#      from_port = to_port = 443 (ideally scoped to GitHub Actions IP ranges,
+#      not 0.0.0.0/0).
+#   3. Convert the HTTP listener above into a 301 redirect to 443 (replace its
+#      default_action with:
+#        redirect { port = "443" protocol = "HTTPS" status_code = "HTTP_301" })
+#      so nothing is ever served in the clear.
+#   4. Set the GitHub secret SCANNER_URL to https://<domain>.
+# ---------------------------------------------------------------------------
+resource "aws_alb_listener" "front_end_https" {
+  count = var.certificate_arn != "" ? 1 : 0
+
+  load_balancer_arn = aws_alb.main.id
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.certificate_arn
+
+  default_action {
+    target_group_arn = aws_alb_target_group.app.id
+    type             = "forward"
+  }
+}
