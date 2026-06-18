@@ -155,7 +155,10 @@ export async function startWorker() {
           QueueUrl: QUEUE_URL,
           MaxNumberOfMessages: 5,
           WaitTimeSeconds: 20, // long polling
-          VisibilityTimeout: 60,
+          // No VisibilityTimeout override here on purpose: inherit the queue's
+          // visibility_timeout_seconds (180s) so there is ONE source of truth.
+          // Setting it here previously pinned every message to 60s and made the
+          // queue's setting a no-op -- the bug this fixes.
         })
       );
 

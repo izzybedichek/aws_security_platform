@@ -9,6 +9,10 @@ resource "aws_ecr_repository" "scanner" {
   name                 = "sast-scanner"
   image_tag_mutability = "MUTABLE"
 
+  # Allow `terraform destroy` to delete the repo even though it holds pushed
+  # images. Without this, teardown fails with RepositoryNotEmptyException.
+  force_delete = true
+
   image_scanning_configuration {
     scan_on_push = true
   }
